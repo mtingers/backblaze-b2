@@ -10,7 +10,6 @@
 #
 
 import os, sys, re, json, urllib2, base64, hashlib, mmap, threading, time
-from mimetypes import MimeTypes
 from Crypto import Random
 from Crypto.Cipher import AES
 import Queue
@@ -33,7 +32,7 @@ def generate_salt_key_iv(password, key_length):
     bs = AES.block_size
     salt = Random.new().read(bs - len('Salted__'))
     key, iv = derive_key_and_iv(password, salt, key_length, bs)
-    return (salt, key, iv) 
+    return (salt, key, iv)
 
 # A stupid way to calculate size of encrypted file and sha1
 # B2 requires a header with the sha1 but urllib2 must have the header before streaming
@@ -42,12 +41,12 @@ def generate_salt_key_iv(password, key_length):
 def calc_encryption_sha_and_length(in_file, password, salt, key_length, key, iv):
     bs = AES.block_size
     size = 0
-    cipher = AES.new(key, AES.MODE_CBC, iv) 
+    cipher = AES.new(key, AES.MODE_CBC, iv)
     sha = hashlib.sha1()
     sha.update('Salted__' + salt)
     size += len('Salted__' + salt)
     finished = False
-    while not finished: 
+    while not finished:
         chunk = in_file.read(1024 * bs)
         if len(chunk) == 0 or len(chunk) % bs != 0:
             padding_length = (bs - len(chunk) % bs) or bs
@@ -183,54 +182,30 @@ class BackBlazeB2(object):
             { 'bucketId' : bucket_id },
             { 'Authorization': self.authorization_token })
 
-    def upload_file(self, path, bucket_id=None, bucket_name=None):
+    # If password is set, encrypt files, else nah
+    def upload_file(self, path, password=None, bucket_id=None, bucket_name=None):
         self._authorize_account()
 
-        # use mmap for streaming the data to avoid storing the entire file in memory
-        fp = open(path, 'rb')
-        mm_file_data = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
-        mime = MimeTypes()
-        mime_type = mime.guess_type(path)
-        if not self.upload_url or not self.upload_authorization_token:
-            url = self.get_upload_url(bucket_name=bucket_name, bucket_id=bucket_id)
-            self.upload_url = url['uploadUrl']
-            self.upload_authorization_token = url['authorizationToken']
-        filename = re.sub('^/', '', path)
-        filename = re.sub('//', '/', filename)
-        # TODO: Figure out URL encoding issue
-        #filename = unicode(filename, "utf-8")
-        content_type = mime_type
-        sha = hashlib.sha1()
-        with open(path, 'rb') as f:
-            while True:
-                block = f.read(2**10)
-                if not block: break
-                sha.update(block)
-        sha1_of_file_data = sha.hexdigest()
-        headers = {
-            'Authorization' : self.upload_authorization_token,
-            'X-Bz-File-Name' :  filename,
-            'Content-Type' : content_type,
-            'X-Bz-Content-Sha1' : sha1_of_file_data
-        }
-        request = urllib2.Request(self.upload_url, mm_file_data, headers)
-
-        response = urllib2.urlopen(request)
-        response_data = json.loads(response.read())
-        response.close()
-        fp.close()
-        return response_data
-
-    # Encrypt files that are uploaded
-    def upload_file_encrypt(self, path, password, bucket_id=None, bucket_name=None):
-        self._authorize_account()
-
-        (salt, key, iv) = generate_salt_key_iv(password, 32)
-        in_file = open(path, 'rb')
-        (sha, size) = calc_encryption_sha_and_length(in_file, password, salt, 32, key, iv)
-        in_file.close()
-
-        fp = Read2Encrypt(path, 'rb', password, salt, 32, key, iv, size=size)
+        if password:
+            (salt, key, iv) = generate_salt_key_iv(password, 32)
+            in_file = open(path, 'rb')
+            (sha, size) = calc_encryption_sha_and_length(in_file, password, salt, 32, key, iv)
+            in_file.close()
+            fp = Read2Encrypt(path, 'rb', password, salt, 32, key, iv, size=size)
+        else:
+            fp = open(path, 'rb')
+            mm_file_data = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
+            filename = re.sub('^/', '', path)
+            filename = re.sub('//', '/', filename)
+            # TODO: Figure out URL encoding issue
+            #filename = unicode(filename, "utf-8")
+            sha = hashlib.sha1()
+            with open(path, 'rb') as f:
+                while True:
+                    block = f.read(2**10)
+                    if not block: break
+                    sha.update(block)
+            sha = sha.hexdigest()
 
         if not self.upload_url or not self.upload_authorization_token:
             url = self.get_upload_url(bucket_name=bucket_name, bucket_id=bucket_id)
@@ -241,15 +216,19 @@ class BackBlazeB2(object):
         filename = re.sub('^/', '', path)
         filename = re.sub('//', '/', filename)
         # TODO: Figure out URL encoding issue
-        #filename = unicode(filename, "utf-8")
+        filename = unicode(filename, "utf-8")
         headers = {
             'Authorization' : self.upload_authorization_token,
             'X-Bz-File-Name' : filename,
             'Content-Type' : 'application/octet-stream',
+            #'Content-Type' : 'b2/x-auto',
             'X-Bz-Content-Sha1' : sha
         }
         try:
-            request = urllib2.Request(self.upload_url, fp, headers)
+            if password:
+                request = urllib2.Request(self.upload_url, fp, headers)
+            else:
+                request = urllib2.Request(self.upload_url, mm_file_data, headers)
             response = urllib2.urlopen(request)
             response_data = json.loads(response.read())
         except urllib2.HTTPError, error:
@@ -336,47 +315,7 @@ class BackBlazeB2(object):
                 f.write(chunk)
         return True
 
-    def recursive_upload(self, path, bucket_id=None, bucket_name=None, exclude_regex=None, include_regex=None,
-            exclude_re_flags=None, include_re_flags=None, password=None):
-        bucket = self.get_bucket_info(bucket_id=bucket_id, bucket_name=bucket_name)
-        if exclude_regex:
-            exclude_regex = re.compile(exclude_regex, flags=exclude_re_flags)
-        if include_regex:
-            include_regex = re.compile(include_regex, flags=include_re_flags)
-
-        nfiles = 0
-        if os.path.isdir(path):
-            for root, dirs, files in os.walk(path):
-                for f in files:
-                    if os.path.islink(root+'/'+f): continue
-                    if exclude_regex and exclude_regex.match(root+'/'+f): continue
-                    if include_regex and not include_regex.match(root+'/'+f): continue
-                    print("UPLOAD: %s" % root+'/'+f)
-                    if password:
-                        self.upload_file_encrypt(root+'/'+f, password, bucket_id=bucket_id, bucket_name=bucket_name)
-                    else:
-                        self.upload_file(root+'/'+f,  bucket_id=bucket_id, bucket_name=bucket_name)
-                    nfiles += 1
-        else:
-            nfiles = 1
-            if not os.path.islink(path):
-                if exclude_regex and exclude_regex.match(path):
-                    nfiles -= 1
-                if include_regex and include_regex.match(path):
-                    nfiles += 1
-            if nfiles > 0:
-                print("UPLOAD: %s" % path)
-                if password:
-                    self.upload_file_encrypt(path, password, bucket_id=bucket_id, bucket_name=bucket_name)
-                else:
-                    self.upload_file(path,  bucket_id=bucket_id, bucket_name=bucket_name)
-                return 1
-            else:
-                print("WARNING: No files uploaded")
-        return nfiles
-
-
-    def upload_worker(self, password, bucket_id, bucket_name):
+    def _upload_worker(self, password, bucket_id, bucket_name):
         while not self.upload_queue_done:
             time.sleep(1)
             try:
@@ -386,17 +325,14 @@ class BackBlazeB2(object):
             # try a few times in case of error
             for i in range(4):
                 try:
-                    if password:
-                        self.upload_file_encrypt(path, password, bucket_id=bucket_id, bucket_name=bucket_name)
-                    else:
-                        self.upload_file(path, bucket_id=bucket_id, bucket_name=bucket_name)
+                    self.upload_file(path, password=password, bucket_id=bucket_id, bucket_name=bucket_name)
                     break
                 except Exception, e:
                     print("WARNING: Error processing file '%s'\n%s\nTrying again." % (path, e))
                     time.sleep(1)
 
-    def recursive_upload_mt(self, path, bucket_id=None, bucket_name=None, exclude_regex=None, include_regex=None,
-            exclude_re_flags=None, include_re_flags=None, password=None):
+    def recursive_upload(self, path, bucket_id=None, bucket_name=None, exclude_regex=None, include_regex=None,
+            exclude_re_flags=None, include_re_flags=None, password=None, multithread=True):
         bucket = self.get_bucket_info(bucket_id=bucket_id, bucket_name=bucket_name)
         if exclude_regex:
             exclude_regex = re.compile(exclude_regex, flags=exclude_re_flags)
@@ -405,26 +341,31 @@ class BackBlazeB2(object):
 
         nfiles = 0
         if os.path.isdir(path):
-            # Generate Queue worker threads to match QUEUE_SIZE
-            self.threads = []
-            self.upload_queue_done = False
-            for i in range(QUEUE_SIZE):
-                t = threading.Thread(target=self.upload_worker, args=(password, bucket_id, bucket_name,))
-                self.threads.append(t)
-                t.start()
+            if multithread:
+                # Generate Queue worker threads to match QUEUE_SIZE
+                self.threads = []
+                self.upload_queue_done = False
+                for i in range(QUEUE_SIZE):
+                    t = threading.Thread(target=self._upload_worker, args=(password, bucket_id, bucket_name,))
+                    self.threads.append(t)
+                    t.start()
 
             for root, dirs, files in os.walk(path):
                 for f in files:
                     if os.path.islink(root+'/'+f): continue
                     if exclude_regex and exclude_regex.match(root+'/'+f): continue
                     if include_regex and not include_regex.match(root+'/'+f): continue
-                    print("UPLOAD: %s" % root+'/'+f)
-                    upload_queue.put(root+'/'+f)
+                    if multithread:
+                        print("UPLOAD: %s" % root+'/'+f)
+                        upload_queue.put(root+'/'+f)
+                    else:
+                        self.upload_file(root+'/'+f,  password=password, bucket_id=bucket_id, bucket_name=bucket_name)
                     nfiles += 1
-            self.upload_queue_done = True
-            for t in self.threads:
-                t.join()
- 
+            if multithread:
+                self.upload_queue_done = True
+                for t in self.threads:
+                    t.join()
+
         else:
             nfiles = 1
             if not os.path.islink(path):
@@ -434,10 +375,7 @@ class BackBlazeB2(object):
                     nfiles += 1
             if nfiles > 0:
                 print("UPLOAD: %s" % path)
-                if password:
-                    self.upload_file_encrypt(path, password, bucket_id=bucket_id, bucket_name=bucket_name)
-                else:
-                    self.upload_file(path,  bucket_id=bucket_id, bucket_name=bucket_name)
+                self.upload_file(path,  password=password, bucket_id=bucket_id, bucket_name=bucket_name)
                 return 1
             else:
                 print("WARNING: No files uploaded")
@@ -454,4 +392,4 @@ class BackBlazeB2(object):
 if __name__ == "__main__":
     # usage: <accountid> <appkey> <path> <bucketname>
     b2 = BackBlazeB2(sys.argv[1], sys.argv[2])
-    b2.recursive_upload_mt(sys.arv[3], bucket_name=sys.argv[4])
+    b2.recursive_upload(sys.argv[3], bucket_name=sys.argv[4]) #, password='changeme123')
