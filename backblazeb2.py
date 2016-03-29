@@ -429,9 +429,80 @@ class BackBlazeB2(object):
 
 # Example command line utility
 if __name__ == "__main__":
-    # usage: <accountid> <appkey> <path> <bucketname>
-    b2 = BackBlazeB2(sys.argv[1], sys.argv[2])
-    #b2.recursive_upload(sys.argv[3], bucket_name=sys.argv[4], multithread=True,  password='changeme123')
-    b2.upload_file(sys.argv[3], bucket_name=sys.argv[4], password='changeme123')
-    b2.download_file_by_name(sys.argv[3], sys.argv[3]+'.testdownload', bucket_name=sys.argv[4], password='changeme123')
-    #b2.recursive_upload(sys.argv[3], bucket_name=sys.argv[4]) #, password='changeme123')
+    import argparse, ConfigParser
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--config', required=True, dest='config_path',
+        help='Configuration path')
+    parser.add_argument('-b', '--bucket-name', required=False, dest='bucket_name',
+        help='Bucket name')
+    parser.add_argument('-B', '--bucket-id', required=False, dest='bucket_id',
+        help='Bucket id')
+    parser.add_argument('-u', '--upload', required=False, dest='upload_path',
+        help='Upload file or directory path', nargs='*')
+    parser.add_argument('-d', '--download', required=False, dest='download', nargs=2,
+        help='Download file source') #, action='store_const')
+    parser.add_argument('-n', '--new-bucket', required=False, dest='new_bucket', nargs=2,
+        help='Create a new bucket [name, type]')
+    parser.add_argument('-lb', '--list-buckets', required=False, dest='list_buckets',
+        help='List buckets', action='store_true')
+    parser.add_argument('-lf', '--list-files', required=False, dest='list_files',
+        help='List files', action='store_true')
+    parser.add_argument('-m', '--multithread', required=False, dest='mt', action='store_true',
+        help='When uploading, enable multithreaded worker queue')
+    args = parser.parse_args()
+
+    if (not args.bucket_name and not args.bucket_id) or (args.bucket_name and args.bucket_id):
+        parser.print_help()
+        print "Must specify either -b/--bucket-name or -B/--bucket-id"
+        sys.exit(1)
+
+    # Consume config
+    config = ConfigParser.ConfigParser()
+    config.read(args.config_path)
+    account_id = config.get('auth', 'account_id')
+    app_key = config.get('auth', 'app_key')
+    enc_pass = None
+    try:
+        enc_pass = config.get('encryption', 'password')
+    except:
+        pass
+
+    b2 = BackBlazeB2(account_id, app_key)
+
+    # Upload an entire directory concurrently, encrypt with a password
+    if args.upload_path:
+        for path in args.upload_path:
+            print("recursive_upload: %s" % path)
+            response = b2.recursive_upload(path, bucket_name=args.bucket_name, bucket_id=args.bucket_id,
+                multithread=args.mt, password=enc_pass)
+            print("Uploaded %d files" % (response))
+
+    # Download
+    if args.download:
+        download_src, download_dst = args.download
+        print("download_file_by_name: %s to %s" % (download_src, download_dst))
+        response = b2.download_file_by_name(download_src, download_dst,
+            bucket_name=args.bucket_name, bucket_id=args.bucket_id, password=enc_pass)
+        print(response)
+
+    # Create bucket
+    # Currently requires -B or -b even if it doesn't exist
+    if args.new_bucket:
+        bucket_name, bucket_type = args.new_bucket
+        response = b2.create_bucket(bucket_name, bucket_type)
+        print(response)
+
+    # List buckets
+    if args.list_buckets:
+        buckets = b2.list_buckets()
+        for bucket in buckets['buckets']:
+            print("%s %s %s" % (bucket['bucketType'], bucket['bucketId'], bucket['bucketName']))
+
+    # List files in bucket
+    if args.list_files:
+        print("list_files: %s %s" % (args.bucket_name, args.bucket_id))
+        files = b2.list_file_names(bucket_name=args.bucket_name, bucket_id=args.bucket_id)
+        print("contentSha1 size uploadTimestamp fileName")
+        for f in files['files']:
+            print("%s %s %s %s" % (f['contentSha1'], f['size'], f['uploadTimestamp'], f['fileName']))
+
