@@ -14,10 +14,6 @@ from Crypto import Random
 from Crypto.Cipher import AES
 import Queue
 
-# Queue for multithreaded upload
-QUEUE_SIZE = 48
-upload_queue = Queue.Queue(maxsize=QUEUE_SIZE)
-
 # Thanks to stackoverflow
 # http://stackoverflow.com/questions/16761458/how-to-aes-encrypt-decrypt-files-using-python-pycrypto-in-an-openssl-compatible
 # TODO: review if these encryption techniques are actually sound.
@@ -111,7 +107,7 @@ class Read2Encrypt(file):
             return chunk
 
 class BackBlazeB2(object):
-    def __init__(self, account_id, app_key):
+    def __init__(self, account_id, app_key, mt_queue_size=12):
         self.account_id = account_id
         self.app_key = app_key
         self.authorization_token = None
@@ -119,6 +115,8 @@ class BackBlazeB2(object):
         self.download_url = None
         self.upload_url = None
         self.upload_authorization_token = None
+        self.queue_size = mt_queue_size
+        self.upload_queue = Queue.Queue(maxsize=mt_queue_size)
 
     def authorize_account(self):
         id_and_key = self.account_id+':'+self.app_key
@@ -198,7 +196,10 @@ class BackBlazeB2(object):
             { 'Authorization': self.authorization_token })
 
     # If password is set, encrypt files, else nah
-    def upload_file(self, path, password=None, bucket_id=None, bucket_name=None):
+    def upload_file(self, path, password=None, bucket_id=None, bucket_name=None,
+        thread_upload_url=None,
+        thread_upload_authorization_token=None):
+
         self._authorize_account()
 
         if password:
@@ -222,10 +223,14 @@ class BackBlazeB2(object):
                     sha.update(block)
             sha = sha.hexdigest()
 
-        if not self.upload_url or not self.upload_authorization_token:
+        if thread_upload_url:
+            cur_upload_url = thread_upload_url
+            cur_upload_authorization_token = thread_upload_authorization_token
+
+        elif not self.upload_url or not self.upload_authorization_token:
             url = self.get_upload_url(bucket_name=bucket_name, bucket_id=bucket_id)
-            self.upload_url = url['uploadUrl']
-            self.upload_authorization_token = url['authorizationToken']
+            cur_upload_url = url['uploadUrl']
+            cur_upload_authorization_token = url['authorizationToken']
 
         # fixup filename
         filename = re.sub('^/', '', path)
@@ -233,7 +238,7 @@ class BackBlazeB2(object):
         # TODO: Figure out URL encoding issue
         filename = unicode(filename, "utf-8")
         headers = {
-            'Authorization' : self.upload_authorization_token,
+            'Authorization' : cur_upload_authorization_token,
             'X-Bz-File-Name' : filename,
             'Content-Type' : 'application/octet-stream',
             #'Content-Type' : 'b2/x-auto',
@@ -241,9 +246,9 @@ class BackBlazeB2(object):
         }
         try:
             if password:
-                request = urllib2.Request(self.upload_url, fp, headers)
+                request = urllib2.Request(cur_upload_url, fp, headers)
             else:
-                request = urllib2.Request(self.upload_url, mm_file_data, headers)
+                request = urllib2.Request(cur_upload_url, mm_file_data, headers)
             response = urllib2.urlopen(request)
             response_data = json.loads(response.read())
         except urllib2.HTTPError, error:
@@ -354,16 +359,28 @@ class BackBlazeB2(object):
         return True
 
     def _upload_worker(self, password, bucket_id, bucket_name):
+        # B2 started requiring a unique upload url per thread
+        """Uploading in Parallel
+        The URL and authorization token that you get from b2_get_upload_url can be used by only one thread at a time.
+        If you want multiple threads running, each one needs to get its own URL and auth token. It can keep using that
+        URL and auth token for multiple uploads, until it gets a returned status indicating that it should get a
+        new upload URL."""
+        url = self.get_upload_url(bucket_name=bucket_name, bucket_id=bucket_id)
+        thread_upload_url = url['uploadUrl']
+        thread_upload_authorization_token = url['authorizationToken']
+
         while not self.upload_queue_done:
             time.sleep(1)
             try:
-                path = upload_queue.get_nowait()
+                path = self.upload_queue.get_nowait()
             except:
                 continue
             # try a few times in case of error
             for i in range(4):
                 try:
-                    self.upload_file(path, password=password, bucket_id=bucket_id, bucket_name=bucket_name)
+                    self.upload_file(path, password=password, bucket_id=bucket_id, bucket_name=bucket_name,
+                        thread_upload_url=thread_upload_url,
+                        thread_upload_authorization_token=thread_upload_authorization_token)
                     break
                 except Exception, e:
                     print("WARNING: Error processing file '%s'\n%s\nTrying again." % (path, e))
@@ -383,7 +400,7 @@ class BackBlazeB2(object):
                 # Generate Queue worker threads to match QUEUE_SIZE
                 self.threads = []
                 self.upload_queue_done = False
-                for i in range(QUEUE_SIZE):
+                for i in range(self.queue_size):
                     t = threading.Thread(target=self._upload_worker, args=(password, bucket_id, bucket_name,))
                     self.threads.append(t)
                     t.start()
@@ -395,7 +412,7 @@ class BackBlazeB2(object):
                     if include_regex and not include_regex.match(root+'/'+f): continue
                     if multithread:
                         print("UPLOAD: %s" % root+'/'+f)
-                        upload_queue.put(root+'/'+f)
+                        self.upload_queue.put(root+'/'+f)
                     else:
                         self.upload_file(root+'/'+f,  password=password, bucket_id=bucket_id, bucket_name=bucket_name)
                     nfiles += 1
@@ -447,13 +464,13 @@ if __name__ == "__main__":
         help='List buckets', action='store_true')
     parser.add_argument('-lf', '--list-files', required=False, dest='list_files',
         help='List files', action='store_true')
-    parser.add_argument('-m', '--multithread', required=False, dest='mt', action='store_true',
-        help='When uploading, enable multithreaded worker queue')
+    parser.add_argument('-m', '--multithread', required=False, dest='mt',
+        help='Upload multithreaded worker queue size')
     args = parser.parse_args()
 
     if (not args.bucket_name and not args.bucket_id) or (args.bucket_name and args.bucket_id):
         parser.print_help()
-        print "Must specify either -b/--bucket-name or -B/--bucket-id"
+        print("Must specify either -b/--bucket-name or -B/--bucket-id")
         sys.exit(1)
 
     # Consume config
@@ -467,7 +484,10 @@ if __name__ == "__main__":
     except:
         pass
 
-    b2 = BackBlazeB2(account_id, app_key)
+    if args.mt:
+        b2 = BackBlazeB2(account_id, app_key, mt_queue_size=int(args.mt))
+    else:
+        b2 = BackBlazeB2(account_id, app_key)
 
     # Upload an entire directory concurrently, encrypt with a password
     if args.upload_path:
