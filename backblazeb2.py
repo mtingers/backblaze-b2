@@ -9,7 +9,7 @@
 #
 #
 
-import os, sys, re, json, urllib2, base64, hashlib, mmap, threading, time
+import os, sys, re, json, urllib2, base64, hashlib, mmap, threading, time, tempfile
 from Crypto import Random
 from Crypto.Cipher import AES
 import Queue
@@ -28,11 +28,26 @@ def derive_key_and_iv(password, salt, key_length, iv_length):
         d += d_i
     return d[:key_length], d[key_length:key_length+iv_length]
 
-def generate_salt_key_iv(password, key_length):
+def generate_salt_key_iv(password, key_length=32):
     bs = AES.block_size
     salt = Random.new().read(bs - len('Salted__'))
     key, iv = derive_key_and_iv(password, salt, key_length, bs)
     return (salt, key, iv)
+
+def decrypt(in_file, out_file, password, key_length=32):
+    bs = AES.block_size
+    salt = in_file.read(bs)[len('Salted__'):]
+    key, iv = derive_key_and_iv(password, salt, key_length, bs)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    next_chunk = ''
+    finished = False
+    while not finished:
+        chunk, next_chunk = next_chunk, cipher.decrypt(in_file.read(1024 * bs))
+        if len(next_chunk) == 0:
+            padding_length = ord(chunk[-1])
+            chunk = chunk[:-padding_length]
+            finished = True
+        out_file.write(chunk)
 
 # A stupid way to calculate size of encrypted file and sha1
 # B2 requires a header with the sha1 but urllib2 must have the header before streaming
@@ -284,7 +299,8 @@ class BackBlazeB2(object):
             { 'fileId' : file_id  },
             { 'Authorization': self.authorization_token })
 
-    def download_file_by_name(self, file_name, dst_file_name, bucket_id=None, bucket_name=None, force=False):
+    def download_file_by_name(self, file_name, dst_file_name, bucket_id=None, bucket_name=None, force=False,
+        password=None):
         if os.path.exists(dst_file_name) and not force:
             raise Exception("Destination file exists. Refusing to overwrite. Set force=True if you wish to do so.")
 
@@ -298,9 +314,21 @@ class BackBlazeB2(object):
                 chunk = resp.read(2**10)
                 if not chunk: break
                 f.write(chunk)
+
+        # If password protection, decrypt
+        if password:
+            d = os.path.dirname(dst_file_name)
+            with tempfile.NamedTemporaryFile(prefix='b2-', dir=d, suffix='.tmp', delete=False) as tfile:
+                tname = tfile.name
+                with open(dst_file_name, 'rb') as in_file:
+                    decrypt(in_file, tfile, password)
+
+            os.unlink(dst_file_name)
+            os.rename(tname, dst_file_name)
+
         return True
 
-    def download_file_by_id(self, file_name, dst_file_name, force=False):
+    def download_file_by_id(self, file_name, dst_file_name, force=False, password=None):
         if os.path.exists(dst_file_name) and not force:
             raise Exception("Destination file exists. Refusing to overwrite. Set force=True if you wish to do so.")
 
@@ -313,6 +341,16 @@ class BackBlazeB2(object):
                 chunk = resp.read(2**10)
                 if not chunk: break
                 f.write(chunk)
+
+        # If password protection, decrypt
+        if password:
+            d = os.path.dirname(dst_file_name)
+            with tempfile.mkstemp(prefix='b2-', dir=d, suffix='.tmp') as tfile, open(dst_file_name, 'rb') as in_file:
+                tname = tfile.name
+                decrypt(in_file, tfile, password)
+            os.unlink(dst_file_name)
+            os.rename(tfile, dst_file_name)
+
         return True
 
     def _upload_worker(self, password, bucket_id, bucket_name):
@@ -389,7 +427,11 @@ class BackBlazeB2(object):
         response.close()
         return response_data
 
+# Example command line utility
 if __name__ == "__main__":
     # usage: <accountid> <appkey> <path> <bucketname>
     b2 = BackBlazeB2(sys.argv[1], sys.argv[2])
-    b2.recursive_upload(sys.argv[3], bucket_name=sys.argv[4]) #, password='changeme123')
+    #b2.recursive_upload(sys.argv[3], bucket_name=sys.argv[4], multithread=True,  password='changeme123')
+    b2.upload_file(sys.argv[3], bucket_name=sys.argv[4], password='changeme123')
+    b2.download_file_by_name(sys.argv[3], sys.argv[3]+'.testdownload', bucket_name=sys.argv[4], password='changeme123')
+    #b2.recursive_upload(sys.argv[3], bucket_name=sys.argv[4]) #, password='changeme123')

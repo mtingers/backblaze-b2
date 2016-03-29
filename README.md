@@ -14,8 +14,9 @@ Examples
     # Upload a single file without a password
     b2.upload_file('/path/to/file.txt', bucket_name='baz')
 
-    # Upload a single file, password encrypted
+    # Upload a single file, password encrypted, then download & decrypt
     b2.upload_file('/path/to/secrets.txt', bucket_name='baz', password='supersecret')
+    response = b2.download_file_by_name('/path/to/myfile.txt', 'savedfile.txt', password='supersecret')
 
     # List all of your buckets
     buckets = b2.list_buckets()
