@@ -233,7 +233,8 @@ class BackBlazeB2(object):
             cur_upload_authorization_token = url['authorizationToken']
 
         # fixup filename
-        filename = re.sub('^/', '', path)
+        filename = re.sub('\\\\', '/', path)    # Make sure Windows paths are converted.
+        filename = re.sub('^/', '', filename)
         filename = re.sub('//', '/', filename)
         # TODO: Figure out URL encoding issue
         filename = unicode(filename, "utf-8")
