@@ -1,4 +1,6 @@
-#!/usr/bin/python
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import, unicode_literals
+
 #
 # Author: Matthew Ingersoll <matth@mtingers.com>
 #
@@ -373,70 +375,55 @@ class BackBlazeB2(object):
                                  {'fileId': file_id},
                                  {'Authorization': self.authorization_token})
 
-    def download_file_by_name(self, file_name, dst_file_name, bucket_id=None,
-                              bucket_name=None, force=False,
-                              password=None):
+    def download_file_with_authorized_url(self, url, dst_file_name, force=False,
+                                          password=None):
         if os.path.exists(dst_file_name) and not force:
             raise Exception(
-                "Destination file exists. Refusing to overwrite. Set force=True if you wish to do so.")
+                "Destination file exists. Refusing to overwrite. "
+                "Set force=True if you wish to do so.")
+        request = urllib2.Request(
+            url, None, {})
+        response = urllib2.urlopen(request)
+
+        return BackBlazeB2.write_file(response, dst_file_name, password)
+
+    def download_file_by_name(self, file_name, dst_file_name, bucket_id=None,
+                              bucket_name=None, force=False, password=None):
+        if os.path.exists(dst_file_name) and not force:
+            raise Exception(
+                "Destination file exists. Refusing to overwrite. "
+                "Set force=True if you wish to do so.")
 
         self._authorize_account()
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
+
         url = self.download_url + '/file/' + bucket[
             'bucketName'] + '/' + file_name
-        request = urllib2.Request(url, None,
-                                  {'Authorization': self.authorization_token})
-        resp = urllib2.urlopen(request)
-        with open(dst_file_name, 'wb') as f:
-            while True:
-                chunk = resp.read(2 ** 10)
-                if not chunk: break
-                f.write(chunk)
 
-        # If password protection, decrypt
-        if password:
-            d = os.path.dirname(dst_file_name)
-            with tempfile.NamedTemporaryFile(prefix='b2-', dir=d, suffix='.tmp',
-                                             delete=False) as tfile:
-                tname = tfile.name
-                with open(dst_file_name, 'rb') as in_file:
-                    decrypt(in_file, tfile, password)
+        headers = {
+            'Authorization': self.authorization_token
+        }
 
-            os.unlink(dst_file_name)
-            os.rename(tname, dst_file_name)
+        request = urllib2.Request(
+            url, None, headers)
+        response = urllib2.urlopen(request)
 
-        return True
+        return BackBlazeB2.write_file(response, dst_file_name, password)
 
-    def download_file_by_id(self, file_name, dst_file_name, force=False,
+    def download_file_by_id(self, file_id, dst_file_name, force=False,
                             password=None):
         if os.path.exists(dst_file_name) and not force:
             raise Exception(
-                "Destination file exists. Refusing to overwrite. Set force=True if you wish to do so.")
+                "Destination file exists. Refusing to overwrite. "
+                "Set force=True if you wish to do so.")
 
         self._authorize_account()
         url = self.download_url + '/b2api/v1/b2_download_file_by_id?fileId=' + file_id
         request = urllib2.Request(url, None,
                                   {'Authorization': self.authorization_token})
         resp = urllib2.urlopen(request)
-        with open(dst_file_name, 'wb') as f:
-            while True:
-                chunk = resp.read(2 ** 10)
-                if not chunk: break
-                f.write(chunk)
-
-        # If password protection, decrypt
-        if password:
-            d = os.path.dirname(dst_file_name)
-            with tempfile.mkstemp(prefix='b2-', dir=d,
-                                  suffix='.tmp') as tfile, open(dst_file_name,
-                                                                'rb') as in_file:
-                tname = tfile.name
-                decrypt(in_file, tfile, password)
-            os.unlink(dst_file_name)
-            os.rename(tfile, dst_file_name)
-
-        return True
+        return BackBlazeB2.write_file(resp, dst_file_name, password)
 
     def _upload_worker(self, password, bucket_id, bucket_name):
         # B2 started requiring a unique upload url per thread
@@ -536,6 +523,28 @@ class BackBlazeB2(object):
         response_data = json.loads(response.read())
         response.close()
         return response_data
+
+    @staticmethod
+    def write_file(response, dst_file_name, password=None):
+        with open(dst_file_name, 'wb') as f:
+            while True:
+                chunk = response.read(2 ** 10)
+                if not chunk:
+                    break
+                f.write(chunk)
+
+        # If password protection, decrypt
+        if password:
+            d = os.path.dirname(dst_file_name)
+            with tempfile.NamedTemporaryFile(prefix='b2-', dir=d, suffix='.tmp',
+                                             delete=False) as tfile:
+                tname = tfile.name
+                with open(dst_file_name, 'rb') as in_file:
+                    decrypt(in_file, tfile, password)
+
+            os.unlink(dst_file_name)
+            os.rename(tname, dst_file_name)
+        return True
 
 
 # Example command line utility
