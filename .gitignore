@@ -9,7 +9,7 @@ __pycache__/
 
 build/*
 dist/*
-s1utils.egg-info/*
+*.egg-info/*
 
 # Pycharm metadata
 .idea/*
