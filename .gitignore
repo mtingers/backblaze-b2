@@ -1,0 +1,15 @@
+# Binaries
+*.pyc
+__pycache__/
+*$py.class
+
+# Cache
+.coverage
+.cache/*
+
+build/*
+dist/*
+s1utils.egg-info/*
+
+# Pycharm metadata
+.idea/*
