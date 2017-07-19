@@ -366,7 +366,7 @@ class BackBlazeB2(object):
         file_names = self.list_file_names(bucket_id=bucket_id,
                                           bucket_name=bucket_name)
         for i in file_names['files']:
-            if i['fileName'] == file_name:
+            if file_name in i['fileName']:
                 return self.get_file_info(i['fileId'])
         return None
 
