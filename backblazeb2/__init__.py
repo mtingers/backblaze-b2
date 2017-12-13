@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import, unicode_literals
+from __future__ import absolute_import
 
 #
 # Author: Matthew Ingersoll <matth@mtingers.com>
@@ -577,7 +577,7 @@ if __name__ == "__main__":
                         help='Upload multithreaded worker queue size')
     args = parser.parse_args()
 
-    if (not args.bucket_name and not args.bucket_id) or (
+    if (not args.bucket_name and not args.bucket_id and not args.new_bucket and not args.list_buckets) or (
         args.bucket_name and args.bucket_id):
         parser.print_help()
         print("Must specify either -b/--bucket-name or -B/--bucket-id")
