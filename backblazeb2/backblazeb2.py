@@ -354,8 +354,6 @@ class BackBlazeB2(object):
             {'Authorization': self.authorization_token})
 
     def delete_file_version(self, file_name, file_id):
-        bucket = self.get_bucket_info(bucket_id=bucket_id,
-                                      bucket_name=bucket_name)
         return self._api_request(
             '%s/b2api/v1/b2_delete_file_version' % self.api_url,
             {'fileName': file_name, 'fileId': file_id},
