@@ -337,13 +337,14 @@ class BackBlazeB2(object):
             {'bucketId': bucket['bucketId']},
             {'Authorization': self.authorization_token})
 
-    def list_file_names(self, bucket_id=None, bucket_name=None):
+    def list_file_names(self, bucket_id=None, bucket_name=None, prefix=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
-        return self._api_request(
-            '%s/b2api/v1/b2_list_file_names' % self.api_url,
-            {'bucketId': bucket['bucketId']},
-            {'Authorization': self.authorization_token})
+        data = {'bucketId': bucket['bucketId']}
+        if prefix:
+            data['startFileName'] = prefix
+        return self._api_request('%s/b2api/v1/b2_list_file_names' % self.api_url, data,
+                                 {'Authorization': self.authorization_token})
 
     def hide_file(self, file_name, bucket_id=None, bucket_name=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
@@ -360,9 +361,8 @@ class BackBlazeB2(object):
             {'Authorization': self.authorization_token})
 
     def get_file_info_by_name(self, file_name, bucket_id=None,
-                              bucket_name=None):
-        file_names = self.list_file_names(bucket_id=bucket_id,
-                                          bucket_name=bucket_name)
+                              bucket_name=None, prefix=None):
+        file_names = self.list_file_names(bucket_id=bucket_id, bucket_name=bucket_name, prefix=prefix)
         for i in file_names['files']:
             if file_name in i['fileName']:
                 return self.get_file_info(i['fileId'])
