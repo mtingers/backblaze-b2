@@ -329,20 +329,46 @@ class BackBlazeB2(object):
                                   'bucketType': bucket_type},
                                  {'Authorization': self.authorization_token})
 
-    def list_file_versions(self, bucket_id=None, bucket_name=None):
+    def list_file_versions(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
+        if maxFileCount > 10000:
+            maxFileCount = 10000
+        
+        if maxFileCount < 0:
+            maxFileCount = 100
+        
+        data = {'bucketId': bucket['bucketId'],'maxFileCount': maxFileCount}
+        
+        if startFileName is not None:
+            data['startFileName'] = startFileName
+        if prefix is not None:
+            data['prefix'] = prefix
+
         return self._api_request(
             '%s/b2api/v1/b2_list_file_versions' % self.api_url,
-            {'bucketId': bucket['bucketId']},
+            data,
             {'Authorization': self.authorization_token})
 
-    def list_file_names(self, bucket_id=None, bucket_name=None):
+    def list_file_names(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
-        return self._api_request(
+        f maxFileCount > 10000:
+            maxFileCount = 10000
+        
+        if maxFileCount < 0:
+            maxFileCount = 100
+            
+        data = {'bucketId': bucket['bucketId'],'maxFileCount': maxFileCount}
+        
+        if startFileName is not None:
+            data['startFileName'] = startFileName
+        if prefix is not None:
+            data['prefix'] = prefix
+            
+        return  self._api_request(
             '%s/b2api/v1/b2_list_file_names' % self.api_url,
-            {'bucketId': bucket['bucketId']},
+            data,
             {'Authorization': self.authorization_token})
 
     def hide_file(self, file_name, bucket_id=None, bucket_name=None):
