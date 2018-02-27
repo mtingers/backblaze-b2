@@ -353,7 +353,7 @@ class BackBlazeB2(object):
     def list_file_names(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
-        f maxFileCount > 10000:
+        if maxFileCount > 10000:
             maxFileCount = 10000
         
         if maxFileCount < 0:
@@ -385,10 +385,8 @@ class BackBlazeB2(object):
             {'fileName': file_name, 'fileId': file_id},
             {'Authorization': self.authorization_token})
 
-    def get_file_info_by_name(self, file_name, bucket_id=None,
-                              bucket_name=None):
-        file_names = self.list_file_names(bucket_id=bucket_id,
-                                          bucket_name=bucket_name)
+    def get_file_info_by_name(self, file_name, bucket_id=None, bucket_name=None):
+        file_names = self.list_file_names(bucket_id=bucket_id, bucket_name=bucket_name, prefix=file_name)
         for i in file_names['files']:
             if file_name in i['fileName']:
                 return self.get_file_info(i['fileId'])
