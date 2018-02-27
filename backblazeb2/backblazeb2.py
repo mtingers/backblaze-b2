@@ -293,6 +293,9 @@ class BackBlazeB2(object):
                           path)  # Make sure Windows paths are converted.
         filename = re.sub('^/', '', filename)
         filename = re.sub('//', '/', filename)
+        #All the whitespaces in the filename should be converted to %20
+        if " " in filename:
+            filename = filename.replace(" ", "%20")
         # TODO: Figure out URL encoding issue
         filename = unicode(filename, "utf-8")
         headers = {
