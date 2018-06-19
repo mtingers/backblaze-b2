@@ -130,8 +130,9 @@ class Read2Encrypt(file):
 
 
 class BackBlazeB2(object):
-    def __init__(self, account_id, app_key, mt_queue_size=12,
-                 valid_duration=24 * 60 * 60):
+
+    def __init__(self, account_id, app_key, mt_queue_size=12, valid_duration=24 * 60 * 60,
+                 auth_token_lifetime_in_seconds=2 * 60 * 60):
         self.account_id = account_id
         self.app_key = app_key
         self.authorization_token = None
@@ -142,6 +143,8 @@ class BackBlazeB2(object):
         self.valid_duration = valid_duration
         self.queue_size = mt_queue_size
         self.upload_queue = Queue.Queue(maxsize=mt_queue_size)
+        self._last_authorization_token_time = None
+        self.auth_token_lifetime_in_seconds = auth_token_lifetime_in_seconds
 
     def authorize_account(self):
         id_and_key = self.account_id + ':' + self.app_key
@@ -160,12 +163,15 @@ class BackBlazeB2(object):
             raise
 
         self.authorization_token = response_data['authorizationToken']
+        self._last_authorization_token_time = time.time()
         self.api_url = response_data['apiUrl']
         self.download_url = response_data['downloadUrl']
         return response_data
 
     def _authorize_account(self):
-        if not self.authorization_token or not self.api_url:
+        if (self._last_authorization_token_time is not None \
+            and time.time() - self._last_authorization_token_time > self.auth_token_lifetime_in_seconds) \
+                or not self.authorization_token or not self.api_url:
             self.authorize_account()
 
     def create_bucket(self, bucket_name, bucket_type='allPrivate'):
