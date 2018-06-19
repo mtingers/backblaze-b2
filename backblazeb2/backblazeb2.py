@@ -300,6 +300,9 @@ class BackBlazeB2(object):
                           path)  # Make sure Windows paths are converted.
         filename = re.sub('^/', '', filename)
         filename = re.sub('//', '/', filename)
+        #All the whitespaces in the filename should be converted to %20
+        if " " in filename:
+            filename = filename.replace(" ", "%20")
         # TODO: Figure out URL encoding issue
         filename = unicode(filename, "utf-8")
         headers = {
@@ -336,22 +339,47 @@ class BackBlazeB2(object):
                                   'bucketType': bucket_type},
                                  {'Authorization': self.authorization_token})
 
-    def list_file_versions(self, bucket_id=None, bucket_name=None):
+    def list_file_versions(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
+        if maxFileCount > 10000:
+            maxFileCount = 10000
+        
+        if maxFileCount < 0:
+            maxFileCount = 100
+        
+        data = {'bucketId': bucket['bucketId'],'maxFileCount': maxFileCount}
+        
+        if startFileName is not None:
+            data['startFileName'] = startFileName
+        if prefix is not None:
+            data['prefix'] = prefix
+
         return self._api_request(
             '%s/b2api/v1/b2_list_file_versions' % self.api_url,
-            {'bucketId': bucket['bucketId']},
+            data,
             {'Authorization': self.authorization_token})
 
-    def list_file_names(self, bucket_id=None, bucket_name=None, prefix=None):
+    def list_file_names(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
-        data = {'bucketId': bucket['bucketId']}
-        if prefix:
-            data['startFileName'] = prefix
-        return self._api_request('%s/b2api/v1/b2_list_file_names' % self.api_url, data,
-                                 {'Authorization': self.authorization_token})
+        if maxFileCount > 10000:
+            maxFileCount = 10000
+        
+        if maxFileCount < 0:
+            maxFileCount = 100
+            
+        data = {'bucketId': bucket['bucketId'],'maxFileCount': maxFileCount}
+        
+        if startFileName is not None:
+            data['startFileName'] = startFileName
+        if prefix is not None:
+            data['prefix'] = prefix
+            
+        return  self._api_request(
+            '%s/b2api/v1/b2_list_file_names' % self.api_url,
+            data,
+            {'Authorization': self.authorization_token})
 
     def hide_file(self, file_name, bucket_id=None, bucket_name=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
