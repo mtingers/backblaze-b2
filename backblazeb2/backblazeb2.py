@@ -554,7 +554,7 @@ class BackBlazeB2(object):
     def _api_request(self, url, data, headers,timeout=None):
         self._authorize_account()
         request = urllib2.Request(url, json.dumps(data), headers)
-        response = response = self.__url_open_with_timeout(request,timeout)
+        response = self.__url_open_with_timeout(request,timeout)
         response_data = json.loads(response.read())
         response.close()
         return response_data
