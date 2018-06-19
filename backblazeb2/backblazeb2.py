@@ -215,7 +215,7 @@ class BackBlazeB2(object):
         return url_authorized_download
 
     def list_buckets(self, timeout=None):
-        self._authorize_account()
+        self._authorize_account(timeout)
         return self._api_request('%s/b2api/v1/b2_list_buckets' % self.api_url,
                                  {'accountId': self.account_id},
                                  {'Authorization': self.authorization_token}, timeout)
@@ -461,7 +461,7 @@ class BackBlazeB2(object):
                 "Destination file exists. Refusing to overwrite. "
                 "Set force=True if you wish to do so.")
 
-        self._authorize_account()
+        self._authorize_account(timeout)
         url = self.download_url + '/b2api/v1/b2_download_file_by_id?fileId=' + file_id
         request = urllib2.Request(url, None,
                                   {'Authorization': self.authorization_token})
@@ -560,7 +560,7 @@ class BackBlazeB2(object):
         return nfiles
 
     def _api_request(self, url, data, headers, timeout=None):
-        self._authorize_account()
+        self._authorize_account(timeout)
         request = urllib2.Request(url, json.dumps(data), headers)
         response = self.__url_open_with_timeout(request, timeout)
         response_data = json.loads(response.read())
