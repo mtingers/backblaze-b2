@@ -1,6 +1,23 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
+import mmap
+import sys
+import time
+
+import Queue
+import base64
+import hashlib
+import json
+import os
+import re
+import tempfile
+import threading
+import urllib2
+from Crypto import Random
+from Crypto.Cipher import AES
+
+
 #
 # Author: Matthew Ingersoll <matth@mtingers.com>
 #
@@ -10,22 +27,6 @@ from __future__ import absolute_import
 #   https://www.backblaze.com/b2/docs/
 #
 #
-
-import Queue
-import base64
-import hashlib
-import json
-import mmap
-import os
-import re
-import sys
-import tempfile
-import threading
-import time
-import urllib2
-
-from Crypto import Random
-from Crypto.Cipher import AES
 
 
 # Thanks to stackoverflow
@@ -43,7 +44,7 @@ def generate_salt_key_iv(password, key_length=32):
     bs = AES.block_size
     salt = Random.new().read(bs - len('Salted__'))
     key, iv = derive_key_and_iv(password, salt, key_length, bs)
-    return (salt, key, iv)
+    return salt, key, iv
 
 
 def decrypt(in_file, out_file, password, key_length=32):
@@ -99,7 +100,7 @@ class Read2Encrypt(file):
         self.bs = AES.block_size
         self.cipher = AES.new(key, AES.MODE_CBC, iv)
         (self.salt, self.key_length, self.key, self.iv) = (
-        salt, key_length, key, iv)
+            salt, key_length, key, iv)
         self.finished = False
         self._size = size
         self._args = args
@@ -130,8 +131,8 @@ class Read2Encrypt(file):
 
 
 class BackBlazeB2(object):
-    def __init__(self, account_id, app_key, mt_queue_size=12,
-                 valid_duration=24 * 60 * 60):
+    def __init__(self, account_id, app_key, mt_queue_size=12, valid_duration=24 * 60 * 60,
+                 auth_token_lifetime_in_seconds=2 * 60 * 60, default_timeout=None):
         self.account_id = account_id
         self.app_key = app_key
         self.authorization_token = None
@@ -142,8 +143,11 @@ class BackBlazeB2(object):
         self.valid_duration = valid_duration
         self.queue_size = mt_queue_size
         self.upload_queue = Queue.Queue(maxsize=mt_queue_size)
+        self.default_timeout = default_timeout
+        self._last_authorization_token_time = None
+        self.auth_token_lifetime_in_seconds = auth_token_lifetime_in_seconds
 
-    def authorize_account(self):
+    def authorize_account(self, timeout=None):
         id_and_key = self.account_id + ':' + self.app_key
         basic_auth_string = 'Basic ' + base64.b64encode(id_and_key)
         headers = {'Authorization': basic_auth_string}
@@ -152,7 +156,7 @@ class BackBlazeB2(object):
                 'https://api.backblaze.com/b2api/v1/b2_authorize_account',
                 headers=headers
             )
-            response = urllib2.urlopen(request)
+            response = self.__url_open_with_timeout(request, timeout)
             response_data = json.loads(response.read())
             response.close()
         except urllib2.HTTPError, error:
@@ -160,26 +164,37 @@ class BackBlazeB2(object):
             raise
 
         self.authorization_token = response_data['authorizationToken']
+        self._last_authorization_token_time = time.time()
         self.api_url = response_data['apiUrl']
         self.download_url = response_data['downloadUrl']
         return response_data
 
-    def _authorize_account(self):
-        if not self.authorization_token or not self.api_url:
-            self.authorize_account()
+    def _authorize_account(self, timeout):
+        if (self._last_authorization_token_time is not None \
+            and time.time() - self._last_authorization_token_time > self.auth_token_lifetime_in_seconds) \
+                or not self.authorization_token or not self.api_url:
+            self.authorize_account(timeout)
 
-    def create_bucket(self, bucket_name, bucket_type='allPrivate'):
-        self._authorize_account()
+    def __url_open_with_timeout(self, request, timeout):
+        if timeout is not None or self.default_timeout is not None:
+            custom_timeout = timeout or self.default_timeout
+            response = urllib2.urlopen(request, timeout=custom_timeout)
+        else:
+            response = urllib2.urlopen(request)
+        return response
+
+    def create_bucket(self, bucket_name, bucket_type='allPrivate', timeout=None):
+        self._authorize_account(timeout)
         # bucket_type can be Either allPublic or allPrivate
         return self._api_request('%s/b2api/v1/b2_create_bucket' % self.api_url,
                                  {'accountId': self.account_id,
                                   'bucketName': bucket_name,
                                   'bucketType': bucket_type},
-                                 {'Authorization': self.authorization_token})
+                                 {'Authorization': self.authorization_token}, timeout)
 
     def get_download_authorization(self, bucket_id, bucket_name,
-                                   file_name_prefix):
-        self._authorize_account()
+                                   file_name_prefix, timeout):
+        self._authorize_account(timeout)
         url = '%s/b2api/v1/b2_get_download_authorization' % self.api_url
         data = {
             'bucketId': bucket_id,
@@ -189,7 +204,8 @@ class BackBlazeB2(object):
         result = self._api_request(
             url,
             data,
-            {'Authorization': self.authorization_token}
+            {'Authorization': self.authorization_token},
+            timeout
         )
         url_authorized_download = "{}/file/{}/{}?Authorization={}".format(
             self.download_url, bucket_name, result['fileNamePrefix'],
@@ -198,13 +214,13 @@ class BackBlazeB2(object):
 
         return url_authorized_download
 
-    def list_buckets(self):
-        self._authorize_account()
+    def list_buckets(self, timeout=None):
+        self._authorize_account(timeout)
         return self._api_request('%s/b2api/v1/b2_list_buckets' % self.api_url,
                                  {'accountId': self.account_id},
-                                 {'Authorization': self.authorization_token})
+                                 {'Authorization': self.authorization_token}, timeout)
 
-    def get_bucket_info(self, bucket_id, bucket_name):
+    def get_bucket_info(self, bucket_id, bucket_name, timeout=None):
         bkt = None
         if not bucket_id and not bucket_name:
             raise Exception(
@@ -213,7 +229,7 @@ class BackBlazeB2(object):
             raise Exception(
                 "create_bucket requires only _one_ argument and not both bucket_id and bucket_name")
 
-        buckets = self.list_buckets()['buckets']
+        buckets = self.list_buckets(timeout)['buckets']
         if not bucket_id:
             key = 'bucketName'
             val = bucket_name
@@ -226,34 +242,34 @@ class BackBlazeB2(object):
                 break
         return bkt
 
-    def delete_bucket(self, bucket_id=None, bucket_name=None):
+    def delete_bucket(self, bucket_id=None, bucket_name=None, timeout=None):
         if not bucket_id and not bucket_name:
             raise Exception(
                 "create_bucket requires either a bucket_id or bucket_name")
         if bucket_id and bucket_name:
             raise Exception(
                 "create_bucket requires only _one_ argument and not both bucket_id and bucket_name")
-        self._authorize_account()
-        bucket = self.get_bucket_info(bucket_id, bucket_name)
+        self._authorize_account(timeout)
+        bucket = self.get_bucket_info(bucket_id, bucket_name, timeout)
         return self._api_request('%s/b2api/v1/b2_delete_bucket' % self.api_url,
                                  {'accountId': self.account_id,
                                   'bucketId': bucket['bucketId']},
-                                 {'Authorization': self.authorization_token})
+                                 {'Authorization': self.authorization_token}, timeout)
 
-    def get_upload_url(self, bucket_name, bucket_id):
-        self._authorize_account()
+    def get_upload_url(self, bucket_name, bucket_id, timeout=None):
+        self._authorize_account(timeout)
         bucket = self.get_bucket_info(bucket_id, bucket_name)
         bucket_id = bucket['bucketId']
         return self._api_request('%s/b2api/v1/b2_get_upload_url' % self.api_url,
                                  {'bucketId': bucket_id},
-                                 {'Authorization': self.authorization_token})
+                                 {'Authorization': self.authorization_token}, timeout)
 
     # If password is set, encrypt files, else nah
     def upload_file(self, path, password=None, bucket_id=None, bucket_name=None,
                     thread_upload_url=None,
-                    thread_upload_authorization_token=None):
+                    thread_upload_authorization_token=None, timeout=None):
 
-        self._authorize_account()
+        self._authorize_account(timeout)
 
         if password:
             (salt, key, iv) = generate_salt_key_iv(password, 32)
@@ -293,7 +309,7 @@ class BackBlazeB2(object):
                           path)  # Make sure Windows paths are converted.
         filename = re.sub('^/', '', filename)
         filename = re.sub('//', '/', filename)
-        #All the whitespaces in the filename should be converted to %20
+        # All the whitespaces in the filename should be converted to %20
         if " " in filename:
             filename = filename.replace(" ", "%20")
         # TODO: Figure out URL encoding issue
@@ -310,7 +326,7 @@ class BackBlazeB2(object):
                 request = urllib2.Request(cur_upload_url, fp, headers)
             else:
                 request = urllib2.Request(cur_upload_url, mm_file_data, headers)
-            response = urllib2.urlopen(request)
+            response = self.__url_open_with_timeout(request, timeout)
             response_data = json.loads(response.read())
         except urllib2.HTTPError, error:
             print("ERROR: %s" % error.read())
@@ -320,29 +336,30 @@ class BackBlazeB2(object):
         fp.close()
         return response_data
 
-    def update_bucket(self, bucket_type, bucket_id=None, bucket_name=None):
+    def update_bucket(self, bucket_type, bucket_id=None, bucket_name=None, timeout=None):
         if bucket_type not in ('allPublic', 'allPrivate'):
             raise Exception(
                 "update_bucket: Invalid bucket_type.  Must be string allPublic or allPrivate")
 
         bucket = self.get_bucket_info(bucket_id=bucket_id,
-                                      bucket_name=bucket_name)
+                                      bucket_name=bucket_name, timeout=timeout)
         return self._api_request('%s/b2api/v1/b2_update_bucket' % self.api_url,
                                  {'bucketId': bucket['bucketId'],
                                   'bucketType': bucket_type},
-                                 {'Authorization': self.authorization_token})
+                                 {'Authorization': self.authorization_token}, timeout)
 
-    def list_file_versions(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None):
+    def list_file_versions(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None,
+                           timeout=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
-                                      bucket_name=bucket_name)
+                                      bucket_name=bucket_name, timeout=timeout)
         if maxFileCount > 10000:
             maxFileCount = 10000
-        
+
         if maxFileCount < 0:
             maxFileCount = 100
-        
-        data = {'bucketId': bucket['bucketId'],'maxFileCount': maxFileCount}
-        
+
+        data = {'bucketId': bucket['bucketId'], 'maxFileCount': maxFileCount}
+
         if startFileName is not None:
             data['startFileName'] = startFileName
         if prefix is not None:
@@ -351,42 +368,43 @@ class BackBlazeB2(object):
         return self._api_request(
             '%s/b2api/v1/b2_list_file_versions' % self.api_url,
             data,
-            {'Authorization': self.authorization_token})
+            {'Authorization': self.authorization_token}, timeout)
 
-    def list_file_names(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None):
+    def list_file_names(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None,
+                        timeout=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
-                                      bucket_name=bucket_name)
+                                      bucket_name=bucket_name, timeout=timeout)
         if maxFileCount > 10000:
             maxFileCount = 10000
-        
+
         if maxFileCount < 0:
             maxFileCount = 100
-            
-        data = {'bucketId': bucket['bucketId'],'maxFileCount': maxFileCount}
-        
+
+        data = {'bucketId': bucket['bucketId'], 'maxFileCount': maxFileCount}
+
         if startFileName is not None:
             data['startFileName'] = startFileName
         if prefix is not None:
             data['prefix'] = prefix
-            
-        return  self._api_request(
+
+        return self._api_request(
             '%s/b2api/v1/b2_list_file_names' % self.api_url,
             data,
-            {'Authorization': self.authorization_token})
+            {'Authorization': self.authorization_token}, timeout)
 
-    def hide_file(self, file_name, bucket_id=None, bucket_name=None):
+    def hide_file(self, file_name, bucket_id=None, bucket_name=None, timeout=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name)
         return self._api_request(
             '%s/b2api/v1/b2_list_file_versions' % self.api_url,
             {'bucketId': bucket['bucketId'], 'fileName': file_name},
-            {'Authorization': self.authorization_token})
+            {'Authorization': self.authorization_token}, timeout)
 
-    def delete_file_version(self, file_name, file_id):
+    def delete_file_version(self, file_name, file_id, timeout=None):
         return self._api_request(
             '%s/b2api/v1/b2_delete_file_version' % self.api_url,
             {'fileName': file_name, 'fileId': file_id},
-            {'Authorization': self.authorization_token})
+            {'Authorization': self.authorization_token}, timeout)
 
     def get_file_info_by_name(self, file_name, bucket_id=None, bucket_name=None):
         file_names = self.list_file_names(bucket_id=bucket_id, bucket_name=bucket_name, prefix=file_name)
@@ -395,33 +413,33 @@ class BackBlazeB2(object):
                 return self.get_file_info(i['fileId'])
         return None
 
-    def get_file_info(self, file_id):
+    def get_file_info(self, file_id, timeout=None):
         return self._api_request('%s/b2api/v1/b2_get_file_info' % self.api_url,
                                  {'fileId': file_id},
-                                 {'Authorization': self.authorization_token})
+                                 {'Authorization': self.authorization_token}, timeout)
 
     def download_file_with_authorized_url(self, url, dst_file_name, force=False,
-                                          password=None):
+                                          password=None, timeout=None):
         if os.path.exists(dst_file_name) and not force:
             raise Exception(
                 "Destination file exists. Refusing to overwrite. "
                 "Set force=True if you wish to do so.")
         request = urllib2.Request(
             url, None, {})
-        response = urllib2.urlopen(request)
+        response = self.__url_open_with_timeout(request, timeout)
 
         return BackBlazeB2.write_file(response, dst_file_name, password)
 
     def download_file_by_name(self, file_name, dst_file_name, bucket_id=None,
-                              bucket_name=None, force=False, password=None):
+                              bucket_name=None, force=False, password=None, timeout=None):
         if os.path.exists(dst_file_name) and not force:
             raise Exception(
                 "Destination file exists. Refusing to overwrite. "
                 "Set force=True if you wish to do so.")
 
-        self._authorize_account()
+        self._authorize_account(timeout)
         bucket = self.get_bucket_info(bucket_id=bucket_id,
-                                      bucket_name=bucket_name)
+                                      bucket_name=bucket_name, timeout=timeout)
 
         url = self.download_url + '/file/' + bucket[
             'bucketName'] + '/' + file_name
@@ -432,22 +450,22 @@ class BackBlazeB2(object):
 
         request = urllib2.Request(
             url, None, headers)
-        response = urllib2.urlopen(request)
+        response = self.__url_open_with_timeout(request, timeout)
 
         return BackBlazeB2.write_file(response, dst_file_name, password)
 
     def download_file_by_id(self, file_id, dst_file_name, force=False,
-                            password=None):
+                            password=None, timeout=None):
         if os.path.exists(dst_file_name) and not force:
             raise Exception(
                 "Destination file exists. Refusing to overwrite. "
                 "Set force=True if you wish to do so.")
 
-        self._authorize_account()
+        self._authorize_account(timeout)
         url = self.download_url + '/b2api/v1/b2_download_file_by_id?fileId=' + file_id
         request = urllib2.Request(url, None,
                                   {'Authorization': self.authorization_token})
-        resp = urllib2.urlopen(request)
+        resp = self.__url_open_with_timeout(request, timeout)
         return BackBlazeB2.write_file(resp, dst_file_name, password)
 
     def _upload_worker(self, password, bucket_id, bucket_name):
@@ -478,8 +496,8 @@ class BackBlazeB2(object):
                     break
                 except Exception, e:
                     print(
-                    "WARNING: Error processing file '%s'\n%s\nTrying again." % (
-                    path, e))
+                            "WARNING: Error processing file '%s'\n%s\nTrying again." % (
+                        path, e))
                     time.sleep(1)
 
     def recursive_upload(self, path, bucket_id=None, bucket_name=None,
@@ -501,7 +519,7 @@ class BackBlazeB2(object):
                 self.upload_queue_done = False
                 for i in range(self.queue_size):
                     t = threading.Thread(target=self._upload_worker, args=(
-                    password, bucket_id, bucket_name,))
+                        password, bucket_id, bucket_name,))
                     self.threads.append(t)
                     t.start()
 
@@ -509,9 +527,9 @@ class BackBlazeB2(object):
                 for f in files:
                     if os.path.islink(root + '/' + f): continue
                     if exclude_regex and exclude_regex.match(
-                                        root + '/' + f): continue
+                            root + '/' + f): continue
                     if include_regex and not include_regex.match(
-                                        root + '/' + f): continue
+                            root + '/' + f): continue
                     if multithread:
                         print("UPLOAD: %s" % root + '/' + f)
                         self.upload_queue.put(root + '/' + f)
@@ -541,10 +559,10 @@ class BackBlazeB2(object):
                 print("WARNING: No files uploaded")
         return nfiles
 
-    def _api_request(self, url, data, headers):
-        self._authorize_account()
+    def _api_request(self, url, data, headers, timeout=None):
+        self._authorize_account(timeout)
         request = urllib2.Request(url, json.dumps(data), headers)
-        response = urllib2.urlopen(request)
+        response = self.__url_open_with_timeout(request, timeout)
         response_data = json.loads(response.read())
         response.close()
         return response_data
@@ -603,7 +621,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if (not args.bucket_name and not args.bucket_id and not args.new_bucket and not args.list_buckets) or (
-        args.bucket_name and args.bucket_id):
+            args.bucket_name and args.bucket_id):
         parser.print_help()
         print("Must specify either -b/--bucket-name or -B/--bucket-id")
         sys.exit(1)
@@ -656,7 +674,7 @@ if __name__ == "__main__":
         buckets = b2.list_buckets()
         for bucket in buckets['buckets']:
             print("%s %s %s" % (
-            bucket['bucketType'], bucket['bucketId'], bucket['bucketName']))
+                bucket['bucketType'], bucket['bucketId'], bucket['bucketName']))
 
     # List files in bucket
     if args.list_files:
@@ -666,4 +684,4 @@ if __name__ == "__main__":
         print("contentSha1 size uploadTimestamp fileName")
         for f in files['files']:
             print("%s %s %s %s" % (
-            f['contentSha1'], f['size'], f['uploadTimestamp'], f['fileName']))
+                f['contentSha1'], f['size'], f['uploadTimestamp'], f['fileName']))
