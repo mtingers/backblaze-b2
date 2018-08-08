@@ -220,14 +220,14 @@ class BackBlazeB2(object):
                                  {'accountId': self.account_id},
                                  {'Authorization': self.authorization_token}, timeout)
 
-    def get_bucket_info(self, bucket_id, bucket_name, timeout=None):
+    def get_bucket_info(self, bucket_id=None, bucket_name=None, timeout=None):
         bkt = None
         if not bucket_id and not bucket_name:
             raise Exception(
-                "create_bucket requires either a bucket_id or bucket_name")
+                "get_bucket_info requires either a bucket_id or bucket_name")
         if bucket_id and bucket_name:
             raise Exception(
-                "create_bucket requires only _one_ argument and not both bucket_id and bucket_name")
+                "get_bucket_info requires only _one_ argument and not both bucket_id and bucket_name")
 
         buckets = self.list_buckets(timeout)['buckets']
         if not bucket_id:
