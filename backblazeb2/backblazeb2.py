@@ -348,7 +348,7 @@ class BackBlazeB2(object):
                                   'bucketType': bucket_type},
                                  {'Authorization': self.authorization_token}, timeout)
 
-    def list_file_versions(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, prefix=None,
+    def list_file_versions(self, bucket_id=None, bucket_name=None, maxFileCount=100, startFileName=None, startFileId=None, prefix=None,
                            timeout=None):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name, timeout=timeout)
@@ -362,6 +362,8 @@ class BackBlazeB2(object):
 
         if startFileName is not None:
             data['startFileName'] = startFileName
+            if startFileId is not None:
+                data['startFileId'] = startFileId
         if prefix is not None:
             data['prefix'] = prefix
 
