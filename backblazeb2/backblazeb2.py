@@ -401,6 +401,7 @@ class BackBlazeB2(object):
             {'Authorization': self.authorization_token}, timeout)
 
     def delete_file_version(self, file_name, file_id, timeout=None):
+        self._authorize_account(timeout)
         return self._api_request(
             '%s/b2api/v1/b2_delete_file_version' % self.api_url,
             {'fileName': file_name, 'fileId': file_id},
