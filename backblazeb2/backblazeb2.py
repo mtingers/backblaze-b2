@@ -344,7 +344,8 @@ class BackBlazeB2(object):
         bucket = self.get_bucket_info(bucket_id=bucket_id,
                                       bucket_name=bucket_name, timeout=timeout)
         return self._api_request('%s/b2api/v1/b2_update_bucket' % self.api_url,
-                                 {'bucketId': bucket['bucketId'],
+                                 {'accountId': self.account_id,
+                                  'bucketId': bucket['bucketId'],
                                   'bucketType': bucket_type},
                                  {'Authorization': self.authorization_token}, timeout)
 
